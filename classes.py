@@ -239,42 +239,47 @@ class LightCurve:
     """
     
     def __init__(self, time=None, wavelen=None, flambda=None, z=None):
-        self.time = time
-        self.wavelen = wavelen
+        self._time = time
+        self._wavelen = wavelen
         self.flambda = flambda
         self._z = z
-        if time is not None and wavelen is not None and flambda is None:
-            self.null()
-            
-    def null(self):
-        self.flambda = np.zeros( (len(self.wavelen), len(self.time)) )
-        
-    def from_model(self, model, norm=10):
-        z = 0 if self._z is None else self._z
-        wavelen = self.wavelen/(1 + z)
-        flambda = model.flux(self.time, wavelen)
-        norm = np.max(flambda) if norm is None else norm
-        self.flambda = flambda.T * norm/np.max(flambda)
-        
-    def flux(self, time, wavelen):
-        lc = interp2d(self.time, self.wavelen, self.flambda)
-        return np.squeeze( lc(time, wavelen) )
-    
-    def bandflux(self, time, band):
-        sed = Sed(self.wavelen, self.flux(time, self.wavelen))
-        return sed.flux(band)
-        
-    def bandfluxes(self, time, bandpasses, filters=None):
-        time = np.array([time]) if '__iter__' not in dir(time) else time
-        seds = [Sed(self.wavelen, self.flux(t, self.wavelen)) for t in time]
-        flambda = np.array([sed.fluxes(bandpasses,filters) for sed in seds])
-        return np.squeeze(flambda)
-    
-    def regrid(self, time, wavelen):
-        self.flambda = self.flux(time,wavelen)
-        self.time = time
-        self.wavelen = wavelen
-        
+
+    @property
+    def time(self):
+        return self._time
+
+    @time.setter
+    def time(self, time):
+        self._time = time
+        if self.time is None or self.wavelen is None or self.flambda is None:
+            self._flux = None
+        else:
+            self._flux = interp2d(self.time, self.wavelen, self.flambda)
+
+    @property
+    def wavelen(self):
+        return self._wavelen
+
+    @wavelen.setter
+    def wavelen(self, wavelen):
+        self._wavelen = wavelen
+        if self.time is None or self.wavelen is None or self.flambda is None:
+            self._flux = None
+        else:
+            self._flux = interp2d(self.time, self.wavelen, self.flambda)
+
+    @property
+    def flambda(self):
+        return self._flambda
+
+    @flambda.setter
+    def flambda(self, flambda):
+        self._flambda = flambda
+        if self.time is None or self.wavelen is None or self.flambda is None:
+            self._flux = None
+        else:
+            self._flux = interp2d(self.time, self.wavelen, self.flambda)
+
     def redshift(self, z=None):
         if z is None:
             return self._z
@@ -282,7 +287,7 @@ class LightCurve:
             z0 = 0 if self._z is None else self._z
             self.wavelen = (1 + z)/(1 + z0) * self.wavelen
             self._z = z
-            
+
     @property
     def tmin(self):
         return None if self.time is None else min(self.time)
@@ -298,6 +303,34 @@ class LightCurve:
     @property
     def wmax(self):
         return None if self.wavelen is None else max(self.wavelen)
+            
+    def flux(self, time, wavelen):
+        return None if self._flux is None else np.squeeze( self._flux(time, wavelen) )
+    
+    def bandflux(self, time, band):
+        sed = Sed(self.wavelen, self.flux(time, self.wavelen))
+        return sed.flux(band)
+        
+    def bandfluxes(self, time, bandpasses, filters=None):
+        time = np.array([time]) if '__iter__' not in dir(time) else time
+        seds = [Sed(self.wavelen, self.flux(t, self.wavelen)) for t in time]
+        flambda = np.array([sed.fluxes(bandpasses,filters) for sed in seds])
+        return np.squeeze(flambda)
+
+    def null(self):
+        self.flambda = np.zeros( (len(self.wavelen), len(self.time)) )
+        
+    def from_model(self, model, norm=10):
+        z = 0 if self._z is None else self._z
+        wavelen = self.wavelen/(1 + z)
+        flambda = model.flux(self.time, wavelen)
+        norm = np.max(flambda) if norm is None else norm
+        self.flambda = flambda.T * norm/np.max(flambda)
+    
+    def regrid(self, time, wavelen):
+        self.flambda = self.flux(time,wavelen)
+        self.time = time
+        self.wavelen = wavelen
     
     def sed_slice(self, time):
         return Sed(self.wavelen, self.flux(time,self.wavelen))
@@ -453,7 +486,8 @@ class SNSurvey:
         norm = np.max(fluxes) if norm is None else norm
         fluxes = fluxes.T * norm/np.max(fluxes)
         
-        lightcurve = interp2d(time, wavelen, fluxes)
+        #lightcurve = interp2d(time, wavelen, fluxes)
+        lc = LightCurve(time, wavelen, fluxes)
         
         redshifts = list(sncosmo.zdist(self.zmin, self.zmax, time=self.duration, area=self.area))
         self.Nobs = len(redshifts)
@@ -479,7 +513,7 @@ class SNSurvey:
                 band = bandpasses.band(band_name)
                 filters = np.append(filters, band_name)
                 
-                sed = Sed(wavelen.copy(), lightcurve(T,wavelen).flatten())
+                sed = lc.sed_slice(T)
                 sed.redshift(z)
                 
                 flux = np.clip(sed.flux(band), 1e-3, None) # need to figure out a way to handle negative and zero fluxes
