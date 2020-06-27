@@ -441,18 +441,19 @@ class SkyObject:
         self.source = source
         self.t0 = t0
     
+    @property
     def Nobs(self):
         return len(self.photometry) if '__len__' in dir(self.photometry) else None
         
     def __repr__(self):
-        string = 'SkyObject Observation: \n\n' + \
-                 '{:>11} = {:<6}'.format('source',str(self.source)) + '\n' + \
-                 '{:>11} = {:<6}'.format('t0',str(self.t0)) + '\n' + \
-                 '{:>11} = {:<6}'.format('spec-z',str(self.specz)) + '\n' + \
-                 '{:>11} = {:<6}'.format('photo-z',str(self.photoz)) + '\n' + \
-                 '{:>11} = {:<6}'.format('photo-z err',str(self.photoz_err)) + '\n' + \
-                 '{:>11} = {:<6}'.format('N obs',str(self.Nobs())) + '\n\n' + \
-                 '\n'.join(self.photometry.pformat(max_lines=16))
+        string = ( 'SkyObject Observation: \n\n'
+                  f'{"source":>11} = {str(self.source):<6} \n'
+                  f'{"t0":>11} = {str(self.t0):<6} \n'
+                  f'{"spec-z":>11} = {str(self.specz):<6} \n'
+                  f'{"photo-z":>11} = {str(self.photoz):<6} \n'
+                  f'{"photo-z err":>11} = {str(self.photoz_err):<6} \n'
+                  f'{"N obs":>11} = {str(self.Nobs):<6} \n\n' ) + \
+                  '\n'.join(self.photometry.pformat(max_lines=16))
         
         return string
 
@@ -483,7 +484,10 @@ class SNSurvey:
         self.duration = duration
         self.cadence = cadence
         self.flux_errf = flux_errf
-        self.Nobs = len(obs) if '__len__' in dir(obs) else None
+
+    @property
+    def Nobs(self):
+        return len(self.obs) if '__len__' in dir(self.obs) else None
         
     def simulate(self, bandpasses, norm=None, seed=13, Ncpus=None):
         
@@ -508,11 +512,10 @@ class SNSurvey:
         lc = LightCurve(time, wavelen, fluxes)
         
         redshifts = list(sncosmo.zdist(self.zmin, self.zmax, time=self.duration, area=self.area))
-        self.Nobs = len(redshifts)
 
-        tasks = list(zip(redshifts, [self]*self.Nobs, [bandpasses]*self.Nobs,
-                    [lc]*self.Nobs, [tmin]*self.Nobs, [tmax]*self.Nobs,
-                    np.random.randint(2**32 - 1,size=self.Nobs)))
+        tasks = list(zip(redshifts, [self]*len(redshifts), [bandpasses]*len(redshifts),
+                    [lc]*len(redshifts), [tmin]*len(redshifts), [tmax]*len(redshifts),
+                    np.random.randint(2**32 - 1,size=len(redshifts))))
         with MultiPool(processes=Ncpus) as pool:
             observations = np.array(list(pool.map(survey_worker, tasks)))
         self.obs = observations
@@ -522,15 +525,15 @@ class SNSurvey:
 
             
     def __repr__(self):
-        string = 'SN Survey Simulation: \n\n' + \
-                 '{:>9} = {:<6}'.format('N obs',str(self.Nobs)) + '\n' + \
-                 '{:>9} = {:<6}'.format('zmin',str(self.zmin)) + '\n' + \
-                 '{:>9} = {:<6}'.format('zmax',str(self.zmax)) + '\n' + \
-                 '{:>9} = {:<6}'.format('area',str(self.area)) + '\n' + \
-                 '{:>9} = {:<6}'.format('duration',str(self.duration)) + '\n' + \
-                 '{:>9} = {:<6}'.format('cadence',str(self.cadence)) + '\n' + \
-                 '{:>9} = {:<6}'.format('flux errf',str(self.flux_errf)) + '\n\n' + \
-                 'Model: \n' + '\n'.join(self.model.__str__().split('\n')[1:])
+        string = ( 'SN Survey Simulation: \n\n'
+                  f'{"N obs":>9} = {str(self.Nobs):<6} \n'
+                  f'{"zmin":>9} = {str(self.zmin):<6} \n'
+                  f'{"zmax":>9} = {str(self.zmax):<6} \n'
+                  f'{"area":>9} = {str(self.area):<6} \n'
+                  f'{"duration":>9} = {str(self.duration):<6} \n'
+                  f'{"cadence":>9} = {str(self.cadence):<6} \n'
+                  f'{"flux errf":>9} = {str(self.flux_errf):<6} \n\n' ) + \
+                  'Model: \n' + '\n'.join(self.model.__str__().split('\n')[1:])
         
         return string
 

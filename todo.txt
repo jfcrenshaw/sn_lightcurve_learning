@@ -1,1 +1,6 @@
 1. Look at downloading and using PLAsTiCC data
+
+
+
+Read the SALT2 paper (https://arxiv.org/pdf/astro-ph/0701828.pdf)
+Read Kyle's Avocado paper

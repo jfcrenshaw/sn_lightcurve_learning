@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+
+from astropy.table import Table
+from classes import SkyObject
+import pickle
+
+metadata = Table.read('plasticc_data/plasticc_train_metadata.csv')
+data = Table.read('plasticc_data/plasticc_train_lightcurves.csv')
+
+source_dict = {90:'SNIa', 67:'SNIa-91bg', 52:'SNIax', 42:'SNII', 62:'SNIbc', 95:'SLSN-I'}
+filter_dict = {0:'lsstu', 1:'lsstg', 2:'lsstr', 3:'lssti', 4:'lsstz', 5:'lssty'}
+
+for key,source in source_dict.items():
+    
+    save = []
+    
+    objs = metadata[metadata['true_target'] == key]['object_id','true_target','true_submodel','true_peakmjd','true_z','hostgal_photoz','hostgal_photoz_err']
+    
+    for row in objs:
+        obj = SkyObject()
+        obj.specz = row['true_z']
+        obj.photoz = row['hostgal_photoz']
+        obj.photoz_err = row['hostgal_photoz_err']
+        obj.source = source if key != 42 else f"{source}-{row['true_submodel']}"
+        obj.t0 = row['true_peakmjd']
+
+        photometry = data[data['object_id'] == row['object_id']]
+        photometry['passband'] = [filter_dict[i] for i in photometry['passband']]
+        del photometry['object_id','detected_bool']
+        obj.photometry = photometry
+        
+        save.append(obj)
+        
+    filename = f'plasticc_data/{source}_SkyObjects.pkl' 
+    with open(filename, 'wb') as output:
+        pickle.dump(save, output)
+    print(f"Saving {filename}")
