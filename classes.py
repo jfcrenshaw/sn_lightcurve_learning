@@ -42,7 +42,8 @@ class Bandpass:
         
     def __repr__(self):
         return 'Bandpass(' + self.name + ')'
-        
+
+
         
 class Bandpasses:
     """
@@ -197,41 +198,8 @@ class Sed:
             
             if pertN == maxPerts:
                 break
+    
 
-                
-class SkyObject:
-    """
-    Class defining an object observed in the sky.
-    
-    photometry is an astropy table describing the observations of the object
-    source is the type of astrophysical source, e.g. SN1a
-    t0 is a reference time, e.g. mjd of peak flux for a SN1a
-    Nobs() returns the number of observations of the object
-    """
-    
-    def __init__(self, photometry=None, specz=None, photoz=None, photoz_err=None, source=None, t0=None):
-        self.photometry = photometry
-        self.specz = specz
-        self.photoz = photoz
-        self.photoz_err = photoz_err
-        self.source = source
-        self.t0 = t0
-    
-    def Nobs(self):
-        return len(self.photometry) if '__len__' in dir(self.photometry) else None
-        
-    def __repr__(self):
-        string = 'SkyObject Observation: \n\n' + \
-                 '{:>11} = {:<6}'.format('source',str(self.source)) + '\n' + \
-                 '{:>11} = {:<6}'.format('t0',str(self.t0)) + '\n' + \
-                 '{:>11} = {:<6}'.format('spec-z',str(self.specz)) + '\n' + \
-                 '{:>11} = {:<6}'.format('photo-z',str(self.photoz)) + '\n' + \
-                 '{:>11} = {:<6}'.format('photo-z err',str(self.photoz_err)) + '\n' + \
-                 '{:>11} = {:<6}'.format('N obs',str(self.Nobs())) + '\n\n' + \
-                 '\n'.join(self.photometry.pformat(max_lines=16))
-        
-        return string
-    
 
 class LightCurve:
     """
@@ -337,10 +305,6 @@ class LightCurve:
     
     def sed_slices(self):
         return {t:Sed(self.wavelen, self.flux(t,self.wavelen)) for t in self.time}
-    
-    def mse(self, observations):
-        # calculate mse w.r.t. the observations
-        pass
 
     def training_sets(self, observations):
 
@@ -361,6 +325,17 @@ class LightCurve:
                     training_sets[t].append(obj_)
 
         return training_sets
+
+    def mse(self, training_sets, bandpasses, Ncpus=None):
+
+        sedslices = self.sed_slices()
+        
+        tasks = list(zip(sedslices.values(), training_sets.values(), [bandpasses]*len(sedslices)))
+        with MultiPool(processes=Ncpus) as pool:
+            results = np.array(list(pool.map(mse_worker, tasks)))
+        N = sum([i[0] for i in results])
+        se = sum([i[1] for i in results])
+        return se/N
 
     def perturb(self, training_sets, bandpasses, w=0.5, Delta=None, Ncpus=None):
             
@@ -416,6 +391,15 @@ class LightCurve:
         ax.set_ylabel("Wavelength ($\mathrm{\AA}$)")
         
         return fig
+
+def mse_worker(task):
+    sed = task[0]
+    training_set = task[1]
+    bandpasses = task[2]
+    N = 0
+    for obj in training_set:
+        N += len(obj.photometry['flux'])
+    return [N, N*sed.mse(training_set, bandpasses)]
     
 def perturbation_worker(task):
     sed = task[0]
@@ -436,6 +420,41 @@ def training_worker(task):
     maxPerts = task[6]
     sed.train(training_set, bandpasses, w, Delta, dmse_stop, maxPerts)
     return sed.flambda
+
+
+
+class SkyObject:
+    """
+    Class defining an object observed in the sky.
+    
+    photometry is an astropy table describing the observations of the object
+    source is the type of astrophysical source, e.g. SN1a
+    t0 is a reference time, e.g. mjd of peak flux for a SN1a
+    Nobs() returns the number of observations of the object
+    """
+    
+    def __init__(self, photometry=None, specz=None, photoz=None, photoz_err=None, source=None, t0=None):
+        self.photometry = photometry
+        self.specz = specz
+        self.photoz = photoz
+        self.photoz_err = photoz_err
+        self.source = source
+        self.t0 = t0
+    
+    def Nobs(self):
+        return len(self.photometry) if '__len__' in dir(self.photometry) else None
+        
+    def __repr__(self):
+        string = 'SkyObject Observation: \n\n' + \
+                 '{:>11} = {:<6}'.format('source',str(self.source)) + '\n' + \
+                 '{:>11} = {:<6}'.format('t0',str(self.t0)) + '\n' + \
+                 '{:>11} = {:<6}'.format('spec-z',str(self.specz)) + '\n' + \
+                 '{:>11} = {:<6}'.format('photo-z',str(self.photoz)) + '\n' + \
+                 '{:>11} = {:<6}'.format('photo-z err',str(self.photoz_err)) + '\n' + \
+                 '{:>11} = {:<6}'.format('N obs',str(self.Nobs())) + '\n\n' + \
+                 '\n'.join(self.photometry.pformat(max_lines=16))
+        
+        return string
 
 
 
@@ -466,7 +485,7 @@ class SNSurvey:
         self.flux_errf = flux_errf
         self.Nobs = len(obs) if '__len__' in dir(obs) else None
         
-    def simulate(self, bandpasses, norm=None, seed=13):
+    def simulate(self, bandpasses, norm=None, seed=13, Ncpus=None):
         
         self.obs = np.array([])
         
@@ -486,49 +505,21 @@ class SNSurvey:
         norm = np.max(fluxes) if norm is None else norm
         fluxes = fluxes.T * norm/np.max(fluxes)
         
-        #lightcurve = interp2d(time, wavelen, fluxes)
         lc = LightCurve(time, wavelen, fluxes)
         
         redshifts = list(sncosmo.zdist(self.zmin, self.zmax, time=self.duration, area=self.area))
         self.Nobs = len(redshifts)
+
+        tasks = list(zip(redshifts, [self]*self.Nobs, [bandpasses]*self.Nobs,
+                    [lc]*self.Nobs, [tmin]*self.Nobs, [tmax]*self.Nobs,
+                    np.random.randint(2**32 - 1,size=self.Nobs)))
+        with MultiPool(processes=Ncpus) as pool:
+            observations = np.array(list(pool.map(survey_worker, tasks)))
+        self.obs = observations
         
-        for z in redshifts:
+        
             
-            t0 = 59600 + np.random.rand() * (self.duration - tmax)
-            toffset = self.cadence * np.random.rand()
-            filter_order = np.roll( bandpasses.names, np.random.randint(len(bandpasses.names)) )
-            
-            mjd = np.array([])
-            fluxes = np.array([])
-            flux_errs = np.array([])
-            filters = np.array([])
-            
-            for i,t in enumerate( np.arange(tmin + toffset, tmax, self.cadence) ):
-                
-                tscatter = 0.5*np.random.rand() - 0.25
-                T = t + tscatter
-                mjd = np.append(mjd, round(t0 + T, 4))
-                
-                band_name = filter_order[ i % len(filter_order) ]
-                band = bandpasses.band(band_name)
-                filters = np.append(filters, band_name)
-                
-                sed = lc.sed_slice(T)
-                sed.redshift(z)
-                
-                flux = np.clip(sed.flux(band), 1e-3, None) # need to figure out a way to handle negative and zero fluxes
-                flux_err = np.fabs(self.flux_errf * flux)
-                fluxes = np.append(fluxes, round(np.random.normal(flux, flux_err), 6) )
-                flux_errs = np.append(flux_errs, round(flux_err, 6))
-            
-            observation = SkyObject()
-            observation.specz = round(z, 4)
-            observation.source = 'SN1a'
-            observation.t0 = round(t0, 4)
-            observation.photometry = Table( data=(mjd, filters, fluxes, flux_errs),
-                                            names=('mjd', 'filter', 'flux', 'flux_err') )
-            
-            self.obs = np.append(self.obs, observation)
+
             
     def __repr__(self):
         string = 'SN Survey Simulation: \n\n' + \
@@ -542,3 +533,55 @@ class SNSurvey:
                  'Model: \n' + '\n'.join(self.model.__str__().split('\n')[1:])
         
         return string
+
+
+def survey_worker(task):
+
+    z = task[0]
+    survey = task[1]
+    bandpasses = task[2]
+    lc = task[3]
+    tmin = task[4]
+    tmax = task[5]
+    seed = task[6]
+
+    np.random.seed(seed)
+
+    t0 = 59600 + np.random.rand() * (survey.duration - tmax)
+    toffset = survey.cadence * np.random.rand()
+    filter_order = np.roll( bandpasses.names, np.random.randint(len(bandpasses.names)) )
+    
+    mjd = np.array([])
+    fluxes = np.array([])
+    flux_errs = np.array([])
+    filters = np.array([])
+    
+    for i,t in enumerate( np.arange(tmin + toffset, tmax, survey.cadence) ):
+        
+        tscatter = 0.5*np.random.rand() - 0.25
+        T = t + tscatter
+        mjd = np.append(mjd, round(t0 + T, 4))
+        
+        band_name = filter_order[ i % len(filter_order) ]
+        band = bandpasses.band(band_name)
+        filters = np.append(filters, band_name)
+        
+        sed = lc.sed_slice(T)
+        sed.redshift(z)
+        
+        flux = np.clip(sed.flux(band), 1e-3, None) # need to figure out a way to handle negative and zero fluxes
+        flux_err = np.fabs(survey.flux_errf * flux)
+        flux = round(np.random.normal(flux, flux_err), 6)
+        flux_err = np.clip(round(flux_err, 6), 1e-6, None)
+
+        fluxes = np.append(fluxes, flux)
+        flux_errs = np.append(flux_errs, flux_err)
+    
+    observation = SkyObject()
+    observation.specz = round(z, 4)
+    observation.source = 'SN1a'
+    observation.t0 = round(t0, 4)
+    observation.photometry = Table( data=(mjd, filters, fluxes, flux_errs),
+                                    names=('mjd', 'filter', 'flux', 'flux_err') )
+    
+    return observation

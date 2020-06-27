@@ -1,5 +1,2 @@
 1. write mse method for lightcurve class. Add pre/post training mse's to the example notebook.
-2. Get training algorithm properly working for negative flux values
-    - idea: when the training set for a given SED is loaded, if any fluxes are negative, add abs(neg) + 1 to all fluxes, and the corresponding values to the flux errors
-    - but wait... negative values shouldn't matter. It's only zeros that should matter? Add a protocol for how to handle zeros in divisions.
-3. Look at downloading and using PLAsTiCC data
+2. Look at downloading and using PLAsTiCC data
