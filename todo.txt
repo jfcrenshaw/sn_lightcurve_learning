@@ -1,2 +1,1 @@
-1. write mse method for lightcurve class. Add pre/post training mse's to the example notebook.
-2. Look at downloading and using PLAsTiCC data
+1. Look at downloading and using PLAsTiCC data
