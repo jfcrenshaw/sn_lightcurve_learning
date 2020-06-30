@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import numpy as np
 from astropy.table import Table
 from classes import SkyObject
 import pickle
@@ -26,6 +27,8 @@ for key,source in source_dict.items():
 
         photometry = data[data['object_id'] == row['object_id']]
         photometry['passband'] = [filter_dict[i] for i in photometry['passband']]
+        photometry.rename_column('passband', 'filter')
+        photometry['flux_err'] = np.abs(photometry['flux_err'])
         del photometry['object_id','detected_bool']
         obj.photometry = photometry
         

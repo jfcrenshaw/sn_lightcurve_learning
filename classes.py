@@ -166,7 +166,7 @@ class Sed:
             rn_dlambda = rn * dlambda.T
             
             gn = fluxes - sedfluxes
-            sigma_n = flux_errs/fluxes
+            sigma_n = np.abs(flux_errs/fluxes)
             gos2 = gn/sigma_n**2
             
             M += np.sum( [np.outer(row,row)/sigma_n[i]**2 for i,row in enumerate(rn_dlambda)], axis=0 )
@@ -189,7 +189,7 @@ class Sed:
         
         pertN = 0
         
-        while abs(dmse) > dmse_stop:
+        while mse0 > 0 and abs(dmse) > dmse_stop:
             pertN += 1
             self.perturb(observations, bandpasses, w, Delta)
             mse = self.mse(observations, bandpasses)
@@ -377,7 +377,7 @@ class LightCurve:
         ax.set_zlabel("Flux Density", labelpad=2)
         ax.view_init(30, -60)
 
-        return fig
+        return fig, ax
     
     def contour_plot(self, figsize=(onecol,onecol), cmap='viridis'):
         fig,ax = plt.subplots(1,1, figsize=figsize, constrained_layout=True)
@@ -390,7 +390,7 @@ class LightCurve:
         ax.set_xlabel("Time (Days)")
         ax.set_ylabel("Wavelength ($\mathrm{\AA}$)")
         
-        return fig
+        return fig, ax
 
 def mse_worker(task):
     sed = task[0]
@@ -418,7 +418,10 @@ def training_worker(task):
     Delta = task[4]
     dmse_stop = task[5]
     maxPerts = task[6]
-    sed.train(training_set, bandpasses, w, Delta, dmse_stop, maxPerts)
+
+    if len(training_set) > 0:
+        sed.train(training_set, bandpasses, w, Delta, dmse_stop, maxPerts)
+        
     return sed.flambda
 
 
