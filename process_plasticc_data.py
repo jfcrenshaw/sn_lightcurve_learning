@@ -15,7 +15,9 @@ for key,source in source_dict.items():
     
     save = []
     
-    objs = metadata[metadata['true_target'] == key]['object_id','true_target','true_submodel','true_peakmjd','true_z','hostgal_photoz','hostgal_photoz_err']
+    objs = metadata[metadata['true_target'] == key]['object_id','true_target','true_submodel',
+                                                    'true_peakmjd','true_z','hostgal_photoz',
+                                                    'hostgal_photoz_err','true_distmod']
     
     for row in objs:
         obj = SkyObject()
@@ -30,6 +32,12 @@ for key,source in source_dict.items():
         photometry.rename_column('passband', 'filter')
         photometry['flux_err'] = np.abs(photometry['flux_err'])
         del photometry['object_id','detected_bool']
+
+        norm = 1e-18
+        d = 10**(row['true_distmod']/5 + 1)
+        photometry['flux'] *= (d/10)**2 * norm
+        photometry['flux_err'] *= (d/10)**2 * norm
+
         obj.photometry = photometry
         
         save.append(obj)

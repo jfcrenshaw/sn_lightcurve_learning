@@ -82,7 +82,7 @@ class Bandpasses:
     
     def eff_widths(self, names=None):
         names = self.names if names is None else names
-        return np.array([self.dict[name].eff_widths for name in names])
+        return np.array([self.dict[name].eff_width for name in names])
     
     def __repr__(self):
         return 'Bandpasses = {' + str(list(self.dict.keys()))[1:-1] + '}'
@@ -173,11 +173,11 @@ class Sed:
             nu += np.sum( (np.diag(gos2) @ rn_dlambda), axis=0 )
             
             sigmas = np.concatenate((sigmas,sigma_n))
-        
-        if Delta is None:
-            Delta = np.mean(sigmas) * np.sqrt( len(self.wavelen)/(w*len(sigmas)) )
-            Delta = np.clip(Delta,0,0.05)
-        M += np.identity(nbins)/Delta**2
+
+        M /= len(sigmas)
+        nu /= len(sigmas)
+        Delta = np.mean(sigmas)/np.sqrt(w)
+        M += np.identity(nbins)/(Delta**2 * nbins)
         
         sol = np.linalg.solve(M,nu)
         self.flambda += sol
