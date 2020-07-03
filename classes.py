@@ -139,7 +139,7 @@ class Sed:
         mse = se/N
         return mse
             
-    def perturb(self, observations, bandpasses, w=0.5, Delta=None):
+    def perturb(self, observations, bandpasses, w=10, Delta=None):
         
         nbins = len(self.wavelen)
         widths = np.diff(self.wavelen)
@@ -182,7 +182,7 @@ class Sed:
         sol = np.linalg.solve(M,nu)
         self.flambda += sol
             
-    def train(self, observations, bandpasses, w=0.5, Delta=None, dmse_stop=0.03, maxPerts=None):
+    def train(self, observations, bandpasses, w=10, Delta=None, dmse_stop=0.03, maxPerts=None):
         
         mse0 = self.mse(observations, bandpasses)
         dmse = np.inf
@@ -198,6 +198,9 @@ class Sed:
             
             if pertN == maxPerts:
                 break
+
+    def copy(self):
+        return copy.deepcopy(self)
     
 
 
@@ -337,7 +340,7 @@ class LightCurve:
         se = sum([i[1] for i in results])
         return se/N
 
-    def perturb(self, training_sets, bandpasses, w=0.5, Delta=None, Ncpus=None):
+    def perturb(self, training_sets, bandpasses, w=10, Delta=None, Ncpus=None):
             
         sedslices = self.sed_slices()
         keys = np.array(list(sedslices.keys()))
@@ -349,7 +352,7 @@ class LightCurve:
             
         self.flambda = newflambda.T
 
-    def train(self, training_sets, bandpasses, w=0.5, Delta=None, 
+    def train(self, training_sets, bandpasses, w=10, Delta=None, 
                 dmse_stop=0.03, maxPerts=None, Ncpus=None):
         
         sedslices = self.sed_slices()
@@ -362,6 +365,9 @@ class LightCurve:
             newflambda = np.array(list(pool.map(training_worker, tasks)))
             
         self.flambda = newflambda.T
+
+    def copy(self):
+        return copy.deepcopy(self)
     
     def surface_plot(self, figsize=(twocol,twocol), cmap='viridis'):
         fig = plt.figure(figsize=figsize, constrained_layout=True)
