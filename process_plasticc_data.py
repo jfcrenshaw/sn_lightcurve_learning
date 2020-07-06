@@ -34,9 +34,9 @@ for key,source in source_dict.items():
         del photometry['object_id','detected_bool']
 
         norm = 1e-18
-        d = 10**(row['true_distmod']/5 + 1)
-        photometry['flux'] *= (d/10)**2 * norm
-        photometry['flux_err'] *= (d/10)**2 * norm
+        distmod = row['true_distmod']
+        photometry['flux'] *= 10**(2/5*distmod) * norm
+        photometry['flux_err'] *= 10**(2/5*distmod) * norm
 
         obj.photometry = photometry
         
@@ -46,3 +46,6 @@ for key,source in source_dict.items():
     with open(filename, 'wb') as output:
         pickle.dump(save, output)
     print(f"Saving {filename}")
+
+
+    #F * 10**[2/5*(m-M)] = F10
