@@ -130,3 +130,6 @@ dmypy.json
 
 # virtual documents?
 .virtual_documents/
+
+# plasticc data
+plasticc_data/*

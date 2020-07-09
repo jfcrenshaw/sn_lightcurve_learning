@@ -136,7 +136,7 @@ class Sed:
             N += len(filters)
             se += sum( (fluxes/flux_errs)**2 * (fluxes - sedfluxes)**2 )
             
-        mse = se/N
+        mse = se/N if N > 0 else 0
         return mse
             
     def perturb(self, observations, bandpasses, w=10, Delta=None):
@@ -315,7 +315,7 @@ class LightCurve:
 
         for obj in observations:
             sort_dict = {t:[] for t in self.time}
-            time = np.array(obj.photometry['mjd'] - obj.t0)
+            time = np.array(obj.photometry['mjd'] - obj.t0)/(1 + obj.specz)
 
             for i,t in enumerate(time):
                 T = self.time[np.abs(self.time - t).argmin()]
@@ -338,7 +338,8 @@ class LightCurve:
             results = np.array(list(pool.map(mse_worker, tasks)))
         N = sum([i[0] for i in results])
         se = sum([i[1] for i in results])
-        return se/N
+        mse = se/N if N > 0 else 0
+        return mse
 
     def perturb(self, training_sets, bandpasses, w=10, Delta=None, Ncpus=None):
             
@@ -378,7 +379,7 @@ class LightCurve:
         
         plt.setp( ax.xaxis.get_majorticklabels(), va="bottom", ha='right' )
         plt.setp( ax.yaxis.get_majorticklabels(), va="bottom", ha='left' )
-        ax.set_xlabel("Time (Days)", ha='left')
+        ax.set_xlabel("Phase (Days)", ha='left')
         ax.set_ylabel("Wavelength ($\mathrm{\AA}$)", labelpad=10)
         ax.set_zlabel("Flux Density", labelpad=2)
         ax.view_init(30, -60)
@@ -393,10 +394,30 @@ class LightCurve:
         zcut = np.max(self.flambda)/20
         z = np.log10( np.clip(self.flambda, zcut, None) )
         ax.contourf(x, y, z, levels=200)
-        ax.set_xlabel("Time (Days)")
+        ax.set_xlabel("Phase (Days)")
         ax.set_ylabel("Wavelength ($\mathrm{\AA}$)")
         
         return fig, ax
+
+    def stacked_plot(self, trange=None, tstep=5, offset_scale=1):
+
+        trange = np.arange(0, self.tmax, tstep) if trange is None else trange
+
+        fig,ax = plt.subplots()
+
+        for i,t in enumerate(trange):
+            sed = self.sed_slice(t)
+            idx = np.abs(sed.wavelen - 10000).argmin()
+            ax.plot(sed.wavelen[:idx], sed.flambda[:idx] + len(trange) - i*offset_scale, c='k')
+            ax.text(sed.wavelen[idx], sed.flambda[idx] + len(trange) - i*offset_scale, t, ha='left', va='center')
+
+        ax.set_xlabel("Wavelength ($\mathrm{\AA}$)")
+        ax.set_ylabel("Flux Density + Offset")
+        ax.set_xlim(1200,10800)
+        ax.set_yticks([])
+
+        return fig, ax
+
 
 def mse_worker(task):
     sed = task[0]
@@ -442,13 +463,14 @@ class SkyObject:
     Nobs() returns the number of observations of the object
     """
     
-    def __init__(self, photometry=None, specz=None, photoz=None, photoz_err=None, source=None, t0=None):
+    def __init__(self, photometry=None, specz=None, photoz=None, photoz_err=None, source=None, t0=None, distmod=None):
         self.photometry = photometry
         self.specz = specz
         self.photoz = photoz
         self.photoz_err = photoz_err
         self.source = source
         self.t0 = t0
+        self.distmod = distmod
     
     @property
     def Nobs(self):
@@ -523,8 +545,7 @@ class SNSurvey:
         redshifts = list(sncosmo.zdist(self.zmin, self.zmax, time=self.duration, area=self.area))
 
         tasks = list(zip(redshifts, [self]*len(redshifts), [bandpasses]*len(redshifts),
-                    [lc]*len(redshifts), [tmin]*len(redshifts), [tmax]*len(redshifts),
-                    np.random.randint(2**32 - 1,size=len(redshifts))))
+                    [lc]*len(redshifts), np.random.randint(2**32 - 1,size=len(redshifts))))
         with MultiPool(processes=Ncpus) as pool:
             observations = np.array(list(pool.map(survey_worker, tasks)))
         self.obs = observations
@@ -552,10 +573,11 @@ def survey_worker(task):
     z = task[0]
     survey = task[1]
     bandpasses = task[2]
-    lc = task[3]
-    tmin = task[4]
-    tmax = task[5]
-    seed = task[6]
+    lc = task[3].copy()
+    lc.time *= (1 + z)
+    tmin = lc.tmin
+    tmax = lc.tmax
+    seed = task[4]
 
     np.random.seed(seed)
 
