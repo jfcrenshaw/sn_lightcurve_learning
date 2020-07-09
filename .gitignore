@@ -132,4 +132,5 @@ dmypy.json
 .virtual_documents/
 
 # plasticc data
-plasticc_data/*
+plasticc_data/*csv
+plasticc_data/*pkl
