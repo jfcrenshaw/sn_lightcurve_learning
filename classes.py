@@ -4,6 +4,9 @@ from scipy.interpolate import interp2d
 import sncosmo
 from astropy.table import Table
 from schwimmbad import MultiPool
+from sklearn.linear_model import RidgeCV
+from sklearn.base import BaseEstimator
+from sklearn.model_selection import GridSearchCV
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
@@ -60,6 +63,7 @@ class Bandpasses:
         names, files = np.loadtxt(filter_loc+filter_list, unpack=True, dtype=str)
         self.names = names
         self.dict = dict()
+        self.dlambda = dlambda
         for name,file in zip(names,files):
             self.dict[name] = Bandpass(filter_loc+file, name, dlambda)
             
@@ -100,7 +104,7 @@ class Sed:
         self._z = z
         
     def null(self):
-        self.flambda = 0 * self.wavelen
+        self.flambda = 0. * self.wavelen
         
     def redshift(self, z=None):
         if z is None:
@@ -119,88 +123,143 @@ class Sed:
         filters = bandpasses.names if filters is None else filters
         return np.array([self.flux(bandpasses.band(name)) for name in filters])
     
-    def mse(self, observations, bandpasses):
-        
-        se = 0
-        N = 0
-        for obj in observations:
-            
-            filters = np.array(obj.photometry['filter'])
-            fluxes = np.array(obj.photometry['flux'])
-            flux_errs = np.array(obj.photometry['flux_err'])
-            
-            sed = copy.deepcopy(self)
-            sed.redshift(obj.specz)
-            sedfluxes = sed.fluxes(bandpasses, filters)
-            
-            N += len(filters)
-            se += sum( (fluxes/flux_errs)**2 * (fluxes - sedfluxes)**2 )
-            
-        mse = se/N if N > 0 else 0
-        return mse
-            
-    def perturb(self, observations, bandpasses, w=10, Delta=None):
-        
-        nbins = len(self.wavelen)
-        widths = np.diff(self.wavelen)
-        widths = np.append(widths, widths[-1])
-        
-        M = np.zeros((nbins,nbins))
-        nu = np.zeros(nbins)
-        sigmas = np.array([])
-        
-        for obj in observations:
-            
-            filters = np.array(obj.photometry['filter'])
-            fluxes = np.array(obj.photometry['flux'])
-            flux_errs = np.array(obj.photometry['flux_err'])
-            
-            sed = copy.deepcopy(self)
-            sed.redshift(obj.specz)
-            sedfluxes = sed.fluxes(bandpasses, filters)
-            
-            rn = np.array([np.interp(self.wavelen * (1 + obj.specz),
-                                    bandpasses.band(name).wavelen, 
-                                    bandpasses.band(name).R) for name in filters])
-            dlambda = widths * (1 + obj.specz)
-            rn_dlambda = rn * dlambda.T
-            
-            gn = fluxes - sedfluxes
-            sigma_n = np.abs(flux_errs/fluxes)
-            gos2 = gn/sigma_n**2
-            
-            M += np.sum( [np.outer(row,row)/sigma_n[i]**2 for i,row in enumerate(rn_dlambda)], axis=0 )
-            nu += np.sum( (np.diag(gos2) @ rn_dlambda), axis=0 )
-            
-            sigmas = np.concatenate((sigmas,sigma_n))
+    def train(self, observations, bandpasses, return_all=False):
 
-        M /= len(sigmas)
-        nu /= len(sigmas)
-        Delta = np.mean(sigmas)/np.sqrt(w)
-        M += np.identity(nbins)/(Delta**2 * nbins)
+        dlambda = bandpasses.dlambda 
+        bins = np.arange(1000, 11000+dlambda, dlambda)
+
+        sigmas = np.array([])
+        R = np.zeros(len(bins)-1)
+        g = np.array([])
+
+        for obj in observations:
+
+            filters = obj.photometry['filter']
+            rn = np.array([np.histogram(band.wavelen/(1 + obj.specz), weights=band.R, bins=bins, density=True)[0] for band in bandpasses.bands(filters)])
+            R = np.vstack((R, rn))
+
+            sed = self.copy()
+            sed.redshift(obj.specz)
+            g = np.concatenate((g, obj.photometry['flux'] - sed.fluxes(bandpasses, filters)))
+            sigmas = np.concatenate((sigmas, obj.photometry['flux_err']))
         
-        sol = np.linalg.solve(M,nu)
-        self.flambda += sol
-            
-    def train(self, observations, bandpasses, w=10, Delta=None, dmse_stop=0.03, maxPerts=None):
-        
-        mse0 = self.mse(observations, bandpasses)
-        dmse = np.inf
-        
-        pertN = 0
-        
-        while mse0 > 0 and abs(dmse) > dmse_stop:
-            pertN += 1
-            self.perturb(observations, bandpasses, w, Delta)
-            mse = self.mse(observations, bandpasses)
-            dmse = (mse - mse0)/mse0
-            mse0 = mse
-            
-            if pertN == maxPerts:
-                break
+        infoDen = np.sum(R, axis=0)/(np.sum(R)*dlambda)
+        idx = np.where(infoDen > 0)[0]
+        bins, infoDen = bins[idx], infoDen[idx]
+        cumInfo = np.cumsum(infoDen*dlambda)
+        cumInfo[0], cumInfo[-1] = 0, 1   
+
+        R = R[1:,idx]
+
+        # first do a broad search of N
+        N = np.arange(30,70,10)
+        alphas = np.linspace(1e-5,100,1000)
+        model = RidgeDEDB(cumInfo=cumInfo, alphas=alphas, bins=bins)
+        clf = GridSearchCV(model, {'N':N})
+        clf.fit(R, g, sigmas=sigmas)
+        model = clf.best_estimator_
+
+        # now do a finer search of N
+        N_approx = model.N 
+        N = np.arange(N_approx-5, N_approx+6, 1)
+        clf = GridSearchCV(model, {'N':N})
+        clf.fit(R, g, sigmas=sigmas)
+        model = clf.best_estimator_
+
+        # now possibly split bins
+        max_widths = np.arange(600,max(np.diff(model.EDbins_))+100,100)
+        model = RidgeDEDB(cumInfo=cumInfo, alphas=alphas, bins=bins, N=model.N_)
+        clf = GridSearchCV(model, {'max_width':max_widths})
+        clf.fit(R, g, sigmas=sigmas)
+        model = clf.best_estimator_
+
+        EDbins = model.EDbins_ + 100 # NEED TO FIND WHY THIS OFFSET IT NEEDED
+        pert = np.append(model.coef_, 0)
+
+        self.flambda += np.interp(self.wavelen, EDbins, pert)
+
+        print("N =",model.N_)
+        print("Nsplit =",model.Nsplit_)
+        print("max width =",model.max_width_)
+        print("alpha =",model.alpha_)
+
+        if model.alpha_ == min(alphas):
+            print(f"Warning: alpha = {model.alpha_}, which is the minimum of the tested range.\n",
+                    "Consider lowering the range of alphas tested.")
+        elif model.alpha_ == max(alphas):
+            print(f"Warning: alpha = {model.alpha_}, which is the max of the tested range.\n",
+                    "Consider increasing the range of alphas tested.")
+
+        # ALSO WRITE WARNINGS FOR MAX/MIN OF N RANGE
+
+        if return_all:
+            return EDbins, pert, bins, infoDen, cumInfo 
 
     def copy(self):
         return copy.deepcopy(self)
+
+
+class RidgeDEDB(BaseEstimator):
+    
+    def __init__(self, N=40, cumInfo=None, 
+                 alphas=np.linspace(1e-3,100,1000),
+                 bins=np.arange(1000, 11010, 10),
+                 max_width=None):
+
+        self.N = N
+        self.cumInfo = cumInfo
+        self.alphas = alphas
+        self.bins = bins
+        self.max_width = max_width
+        
+    def fit(self, R, g, sigmas):
+        
+        infoBins = np.linspace(0.,1.,self.N)
+        EDbins = np.interp(infoBins,self.cumInfo,self.bins)
+        EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
+
+        R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
+
+        model = RidgeCV(alphas=self.alphas, fit_intercept=False)
+        model.fit(R_dlambda, g, 1/sigmas**2)
+        
+        self.N_ = self.N
+        self.Nsplit_ = len(EDbins) - self.N
+        self.max_width_ = self.max_width
+        self.EDbins_ = EDbins
+        self.alpha_ = model.alpha_
+        self.coef_ = model.coef_
+        
+        return self
+    
+    def predict(self, R):
+        
+        infoBins = np.linspace(0.,1.,self.N)
+        EDbins = np.interp(infoBins,self.cumInfo,self.bins)
+        EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
+
+        R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
+        
+        return R_dlambda @ self.coef_
+    
+    def score(self, R, g):
+        
+        u = ((g - self.predict(R))**2).sum()
+        v = ((g - g.mean())**2).sum()
+        
+        return 1 - u/v
+
+    def split(self,bins,max_width):
+
+        bins_ = bins.copy()
+
+        diffs = np.diff(bins)
+        while any(diffs > max_width):
+            idx = np.where(diffs > max_width)[0][0]
+            bins_ = np.insert(bins_, idx+1, 0.5*(bins_[idx]+bins_[idx+1]))
+            diffs = np.diff(bins_)
+
+        return bins_
     
 
 
