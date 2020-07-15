@@ -31,7 +31,7 @@ class Bandpass:
         
         # resample wavelen and calculate R
         self.wavelen = np.arange(min(wavelen), max(wavelen)+dlambda, dlambda)
-        self.T = np.interp(self.wavelen, wavelen, T)
+        self.T = np.interp(self.wavelen, wavelen, T, left=0, right=0)
         self.R = self.T * self.wavelen
         self.R /= (self.R * dlambda).sum()
         del wavelen, T
@@ -115,7 +115,7 @@ class Sed:
             self._z = z
         
     def flux(self, band):
-        y = np.interp(band.wavelen, self.wavelen, self.flambda)
+        y = np.interp(band.wavelen, self.wavelen, self.flambda, left=0, right=0)
         flux = (y * band.R).sum() * (band.wavelen[1] - band.wavelen[0])
         return flux
     
@@ -152,7 +152,7 @@ class Sed:
         R = R[1:,idx]
 
         # first do a broad search of N
-        N = np.arange(30,70,10)
+        N = np.arange(25,45,5)
         alphas = np.linspace(1e-5,100,1000)
         model = RidgeDEDB(cumInfo=cumInfo, alphas=alphas, bins=bins)
         clf = GridSearchCV(model, {'N':N})
@@ -161,7 +161,7 @@ class Sed:
 
         # now do a finer search of N
         N_approx = model.N 
-        N = np.arange(N_approx-5, N_approx+6, 1)
+        N = np.arange(N_approx-2, N_approx+3, 1)
         clf = GridSearchCV(model, {'N':N})
         clf.fit(R, g, sigmas=sigmas)
         model = clf.best_estimator_
@@ -176,7 +176,7 @@ class Sed:
         EDbins = model.EDbins_ + 100 # NEED TO FIND WHY THIS OFFSET IT NEEDED
         pert = np.append(model.coef_, 0)
 
-        self.flambda += np.interp(self.wavelen, EDbins, pert)
+        self.flambda += np.interp(self.wavelen, EDbins, pert, left=0, right=0)
 
         print("N =",model.N_)
         print("Nsplit =",model.Nsplit_)
@@ -193,7 +193,7 @@ class Sed:
         # ALSO WRITE WARNINGS FOR MAX/MIN OF N RANGE
 
         if return_all:
-            return EDbins, pert, bins, infoDen, cumInfo 
+            return EDbins, pert, bins, infoDen, cumInfo
 
     def copy(self):
         return copy.deepcopy(self)
@@ -215,7 +215,7 @@ class RidgeDEDB(BaseEstimator):
     def fit(self, R, g, sigmas):
         
         infoBins = np.linspace(0.,1.,self.N)
-        EDbins = np.interp(infoBins,self.cumInfo,self.bins)
+        EDbins = np.interp(infoBins,self.cumInfo,self.bins, left=0, right=0)
         EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
 
         R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
@@ -235,7 +235,7 @@ class RidgeDEDB(BaseEstimator):
     def predict(self, R):
         
         infoBins = np.linspace(0.,1.,self.N)
-        EDbins = np.interp(infoBins,self.cumInfo,self.bins)
+        EDbins = np.interp(infoBins,self.cumInfo,self.bins,left=0,right=0)
         EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
 
         R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
