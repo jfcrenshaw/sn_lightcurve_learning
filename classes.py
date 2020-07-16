@@ -1,7 +1,6 @@
 import numpy as np
 import copy
 from scipy.interpolate import interp2d
-from scipy.integrate import trapz
 import sncosmo
 from astropy.table import Table
 from schwimmbad import MultiPool
@@ -16,10 +15,6 @@ plt.style.use('paper.mplstyle')
 twocol = 7.1014
 onecol = 3.35
 
-def rebin_pdf(x, y, bins):
-    pdf = np.interp(bins, x, y, left=0, right=0)
-    norm = np.sum(pdf * np.diff(bins,append=0))
-    return np.zeros(len(bins)) if norm == 0 else pdf/norm
 
 class Bandpass:
     """
@@ -129,122 +124,124 @@ class Sed:
         filters = bandpasses.names if filters is None else filters
         return np.array([self.flux(bandpasses.band(name)) for name in filters])
     
-    def train(self, observations, bandpasses, return_all=False):
+    def train(self, observations, bandpasses, return_model=False, verbose=False, Ncpus=1):
 
+        # begin with binning at bandpass resolution
         dlambda = bandpasses.dlambda 
-        bins = np.arange(1000, 11000+dlambda, dlambda)
+        initbins = np.arange(1000, 11000+dlambda, dlambda)
 
-        sigmas = np.array([])
-        R = np.zeros(len(bins))
+        # create objects for training
+        R = np.zeros(len(initbins)) # empty row that is removed after assembling R
         g = np.array([])
+        sigmas = np.array([])
 
         for obj in observations:
 
+            # append bandpasses to R
             filters = obj.photometry['filter']
-            rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),bins) for band in bandpasses.bands(filters)])
+            rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),initbins) for band in bandpasses.bands(filters)])
             R = np.vstack((R, rn))
 
+            # append to residual vector R
             sed = self.copy()
             sed.redshift(obj.specz)
             g = np.concatenate((g, obj.photometry['flux'] - sed.fluxes(bandpasses, filters)))
+            
+            # append flux errors
             sigmas = np.concatenate((sigmas, obj.photometry['flux_err']))
+            
+        # cut out the extraneous zeros on the wavelength tails
+        idx = np.where(np.sum(R,axis=0) > 0)[0]
+        idxmin, idxmax = idx[0], idx[-1] + 1
+        initbins = initbins[idxmin:idxmax]
+        R = R[1:,idxmin:idxmax] # we also remove first empty row of R 
         
-        infoDen = np.sum(R, axis=0)/(np.sum(R)*dlambda)
-        idx = np.where(infoDen > 0)[0]
-        bins, infoDen = bins[idx], infoDen[idx]
-        cumInfo = np.cumsum(infoDen*dlambda)
-        cumInfo[0], cumInfo[-1] = 0, 1   
+        # cross validation ridge regression
+        alphas = np.linspace(1e-6,1,1000)
+        N_EDBs = np.arange(30,45,1)
+        max_widths = np.append(np.arange(600,1100,100), None)
+        kfolds = min(5,len(g))
+        model = RidgeDEDB(alphas=alphas, initbins=initbins)
+        cv = GridSearchCV(model, {'N_EDB':N_EDBs, 'max_width':max_widths}, cv=kfolds, n_jobs=Ncpus)
+        cv.fit(R, g, sigmas=sigmas)
+        model = cv.best_estimator_
+        
+        # add perturbation to original SED
+        finalbins = np.append(model.allbins_, initbins[-1])
+        pert = np.append(model.coef_, 0)
+        self.flambda += np.interp(self.wavelen, finalbins, pert, left=0, right=0)
 
-        R = R[1:,idx]
-
-        # first do a broad search of N
-        N = np.arange(25,45,5)
-        alphas = np.linspace(1e-5,100,1000)
-        model = RidgeDEDB(cumInfo=cumInfo, alphas=alphas, bins=bins)
-        clf = GridSearchCV(model, {'N':N})
-        clf.fit(R, g, sigmas=sigmas)
-        model = clf.best_estimator_
-
-        # now do a finer search of N
-        N_approx = model.N 
-        N = np.arange(N_approx-2, N_approx+3, 1)
-        clf = GridSearchCV(model, {'N':N})
-        clf.fit(R, g, sigmas=sigmas)
-        model = clf.best_estimator_
-
-        # now possibly split bins
-        max_widths = np.arange(600,max(np.diff(model.EDbins_))+100,100)
-        model = RidgeDEDB(cumInfo=cumInfo, alphas=alphas, bins=bins, N=model.N_)
-        clf = GridSearchCV(model, {'max_width':max_widths})
-        clf.fit(R, g, sigmas=sigmas)
-        model = clf.best_estimator_
-
-        EDbins = model.EDbins_
-        pert = model.coef_
-
-        self.flambda += np.interp(self.wavelen, EDbins, pert, left=0, right=0)
-
-        print("N =",model.N_)
-        print("Nsplit =",model.Nsplit_)
-        print("max width =",model.max_width_)
-        print("alpha =",model.alpha_)
-
-        if model.alpha_ == min(alphas):
-            print(f"Warning: alpha = {model.alpha_}, which is the minimum of the tested range.\n",
-                    "Consider lowering the range of alphas tested.")
-        elif model.alpha_ == max(alphas):
-            print(f"Warning: alpha = {model.alpha_}, which is the max of the tested range.\n",
-                    "Consider increasing the range of alphas tested.")
-
-        # ALSO WRITE WARNINGS FOR MAX/MIN OF N RANGE
-
-        if return_all:
-            return EDbins, pert, bins, infoDen, cumInfo
+        # print statements
+        names = ['alpha', 'N_EDB', 'Max width', 'N_split']
+        vals = [round(model.alpha_,4), model.N_EDB, model.max_width, model.Nsplit_]
+        cv_ranges = [alphas, N_EDBs, max_widths[:-1]]
+        
+        if verbose:
+            for name,val in zip(names,vals):
+                print(f"{name} = {val}")
+        
+        for name, val, cv_range in zip(names[:-1],vals[:-1],cv_ranges):
+            if val == min(cv_range):
+                print(f"Warning: {name} = {val}, which is the minimum of the tested range.\n",
+                        f"Consider lowering the range of {name}s tested.")
+            elif val == max(cv_range):
+                print(f"Warning: {name} = {val}, which is the maximum of the tested range.\n",
+                        f"Consider raising the range of {name}s tested.")
+                
+        if return_model:
+            return model
 
     def copy(self):
         return copy.deepcopy(self)
 
-
+    
 class RidgeDEDB(BaseEstimator):
     
-    def __init__(self, N=40, cumInfo=None, 
-                 alphas=np.linspace(1e-3,100,1000),
-                 bins=np.arange(1000, 11010, 10),
-                 max_width=None):
-
-        self.N = N
-        self.cumInfo = cumInfo
+    def __init__(self, N_EDB=40, alphas=np.linspace(1e-3,100,1000),
+                 initbins=np.arange(1000, 11010, 10), max_width=None):
+        self.N_EDB = N_EDB
         self.alphas = alphas
-        self.bins = bins
+        self.initbins = initbins
         self.max_width = max_width
         
-    def fit(self, R, g, sigmas):
+    def fit(self, R, g, sigmas=None):
         
-        infoBins = np.linspace(0.,1.,self.N)
-        EDbins = np.interp(infoBins,self.cumInfo,self.bins, left=0, right=0)
-        EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
+        # if errors aren't provided, weight all photometry equally
+        sigmas = np.ones(len(g)) if sigmas is None else sigmas
+        
+        # calculate info density and cumulative info
+        dlambda = self.initbins[1] - self.initbins[0]
+        infoDen = np.sum(R, axis=0)/(np.sum(R) * dlambda)
+        self.infoDen_ = infoDen
+        cumInfo = np.cumsum(infoDen * dlambda)
+        self.cumInfo_ = cumInfo
+        
+        # dynamically determine the equal density bins
+        infobins = np.linspace(0.001, 0.999, self.N_EDB)
+        self.infobins_ = infobins
+        EDbins = np.interp(infobins, cumInfo, self.initbins, left=0, right=0)
+        self.EDbins_ = EDbins
+        
+        # split any bins larger than max_width
+        allbins = self.split_bins()
+        self.allbins_ = allbins
 
-        R_dlambda = np.array([rebin_pdf(self.bins,row,EDbins) * np.diff(EDbins,append=0) for row in R])
+        # rebin R and calculate R * dlambda
+        R_dlambda = np.array([rebin_pdf(self.initbins, row, allbins) * np.diff(allbins, append=0) for row in R])
 
+        # perform cross-validated Ridge Regression on alpha
         model = RidgeCV(alphas=self.alphas, fit_intercept=False)
         model.fit(R_dlambda, g, 1/sigmas**2)
         
-        self.N_ = self.N
-        self.Nsplit_ = len(EDbins) - self.N
-        self.max_width_ = self.max_width
-        self.EDbins_ = EDbins
+        self.Nsplit_ = len(allbins) - self.N_EDB
         self.alpha_ = model.alpha_
         self.coef_ = model.coef_
         
         return self
     
     def predict(self, R):
-        
-        infoBins = np.linspace(0.,1.,self.N)
-        EDbins = np.interp(infoBins,self.cumInfo,self.bins,left=0,right=0)
-        EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
 
-        R_dlambda = np.array([rebin_pdf(self.bins,row,EDbins) * np.diff(EDbins,append=0) for row in R])
+        R_dlambda = np.array([rebin_pdf(self.initbins, row, self.allbins_) * np.diff(self.allbins_,append=0) for row in R])
         
         return R_dlambda @ self.coef_
     
@@ -255,20 +252,27 @@ class RidgeDEDB(BaseEstimator):
         
         return 1 - u/v
 
-    def split(self,bins,max_width):
+    def split_bins(self):
 
-        bins_ = bins.copy()
+        bins = self.EDbins_.copy()
+        if self.max_width is None:
+            return bins
+        else:
+            diffs = np.diff(bins)
+            while any(diffs > self.max_width):
+                idx = np.where(diffs > self.max_width)[0][0]
+                bins = np.insert(bins, idx+1, 1/2*(bins[idx] + bins[idx+1]))
+                diffs = np.diff(bins)
 
-        diffs = np.diff(bins)
-        while any(diffs > max_width):
-            idx = np.where(diffs > max_width)[0][0]
-            bins_ = np.insert(bins_, idx+1, 0.5*(bins_[idx]+bins_[idx+1]))
-            diffs = np.diff(bins_)
+            return bins    
 
-        return bins_
+
+def rebin_pdf(x, y, bins):
+    pdf = np.interp(bins, x, y, left=0, right=0)
+    norm = np.sum(pdf * np.diff(bins,append=0))
+    return np.zeros(len(bins)) if norm == 0 else pdf/norm
+
     
-
-
 class LightCurve:
     """
     docstring
