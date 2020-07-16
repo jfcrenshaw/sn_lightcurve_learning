@@ -1,6 +1,7 @@
 import numpy as np
 import copy
 from scipy.interpolate import interp2d
+from scipy.integrate import trapz
 import sncosmo
 from astropy.table import Table
 from schwimmbad import MultiPool
@@ -14,6 +15,11 @@ from mpl_toolkits.mplot3d import Axes3D
 plt.style.use('paper.mplstyle')
 twocol = 7.1014
 onecol = 3.35
+
+def rebin_pdf(x, y, bins):
+    pdf = np.interp(bins, x, y, left=0, right=0)
+    norm = np.sum(pdf * np.diff(bins,append=0))
+    return np.zeros(len(bins)) if norm == 0 else pdf/norm
 
 class Bandpass:
     """
@@ -129,13 +135,13 @@ class Sed:
         bins = np.arange(1000, 11000+dlambda, dlambda)
 
         sigmas = np.array([])
-        R = np.zeros(len(bins)-1)
+        R = np.zeros(len(bins))
         g = np.array([])
 
         for obj in observations:
 
             filters = obj.photometry['filter']
-            rn = np.array([np.histogram(band.wavelen/(1 + obj.specz), weights=band.R, bins=bins, density=True)[0] for band in bandpasses.bands(filters)])
+            rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),bins) for band in bandpasses.bands(filters)])
             R = np.vstack((R, rn))
 
             sed = self.copy()
@@ -173,8 +179,8 @@ class Sed:
         clf.fit(R, g, sigmas=sigmas)
         model = clf.best_estimator_
 
-        EDbins = model.EDbins_ + 100 # NEED TO FIND WHY THIS OFFSET IT NEEDED
-        pert = np.append(model.coef_, 0)
+        EDbins = model.EDbins_
+        pert = model.coef_
 
         self.flambda += np.interp(self.wavelen, EDbins, pert, left=0, right=0)
 
@@ -218,7 +224,7 @@ class RidgeDEDB(BaseEstimator):
         EDbins = np.interp(infoBins,self.cumInfo,self.bins, left=0, right=0)
         EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
 
-        R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
+        R_dlambda = np.array([rebin_pdf(self.bins,row,EDbins) * np.diff(EDbins,append=0) for row in R])
 
         model = RidgeCV(alphas=self.alphas, fit_intercept=False)
         model.fit(R_dlambda, g, 1/sigmas**2)
@@ -238,7 +244,7 @@ class RidgeDEDB(BaseEstimator):
         EDbins = np.interp(infoBins,self.cumInfo,self.bins,left=0,right=0)
         EDbins = self.split(EDbins, self.max_width) if self.max_width is not None else EDbins
 
-        R_dlambda = np.array([np.histogram(self.bins, weights=row, bins=EDbins, density=True)[0] * np.diff(EDbins) for row in R])
+        R_dlambda = np.array([rebin_pdf(self.bins,row,EDbins) * np.diff(EDbins,append=0) for row in R])
         
         return R_dlambda @ self.coef_
     
