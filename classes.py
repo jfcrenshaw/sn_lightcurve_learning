@@ -157,9 +157,9 @@ class Sed:
         R = R[1:,idxmin:idxmax] # we also remove first empty row of R 
         
         # cross validation ridge regression
-        alphas = np.linspace(1e-6,1,1000)
-        N_EDBs = np.arange(30,45,1)
-        max_widths = np.append(np.arange(600,1100,100), None)
+        alphas = np.linspace(1e-5,1,1000)
+        N_EDBs = np.arange(30,50,1)
+        max_widths = np.append(np.arange(500,1200,100), None)
         kfolds = min(5,len(g))
         model = RidgeDEDB(alphas=alphas, initbins=initbins)
         cv = GridSearchCV(model, {'N_EDB':N_EDBs, 'max_width':max_widths}, cv=kfolds, n_jobs=Ncpus)
@@ -272,7 +272,7 @@ def rebin_pdf(x, y, bins):
     norm = np.sum(pdf * np.diff(bins,append=0))
     return np.zeros(len(bins)) if norm == 0 else pdf/norm
 
-    
+
 class LightCurve:
     """
     docstring
@@ -398,43 +398,18 @@ class LightCurve:
 
         return training_sets
 
-    def mse(self, training_sets, bandpasses, Ncpus=None):
-
-        sedslices = self.sed_slices()
-        
-        tasks = list(zip(sedslices.values(), training_sets.values(), [bandpasses]*len(sedslices)))
-        with MultiPool(processes=Ncpus) as pool:
-            results = np.array(list(pool.map(mse_worker, tasks)))
-        N = sum([i[0] for i in results])
-        se = sum([i[1] for i in results])
-        mse = se/N if N > 0 else 0
-        return mse
-
-    def perturb(self, training_sets, bandpasses, w=10, Delta=None, Ncpus=None):
-            
-        sedslices = self.sed_slices()
-        keys = np.array(list(sedslices.keys()))
-        
-        tasks = list(zip(sedslices.values(), training_sets.values(), 
-                         [bandpasses]*len(keys), [w]*len(keys), [Delta]*len(keys)))
-        with MultiPool(processes=Ncpus) as pool:
-            newflambda = np.array(list(pool.map(perturbation_worker, tasks)))
-            
-        self.flambda = newflambda.T
-
-    def train(self, training_sets, bandpasses, w=10, Delta=None, 
-                dmse_stop=0.03, maxPerts=None, Ncpus=None):
+    def train(self, training_sets, bandpasses, Ncpus=None, verbose=False):
         
         sedslices = self.sed_slices()
-        keys = np.array(list(sedslices.keys()))
-            
-        tasks = list(zip(sedslices.values(), training_sets.values(), 
-                         [bandpasses]*len(keys), [w]*len(keys), [Delta]*len(keys),
-                         [dmse_stop]*len(keys), [maxPerts]*len(keys)))
-        with MultiPool(processes=Ncpus) as pool:
-            newflambda = np.array(list(pool.map(training_worker, tasks)))
-            
-        self.flambda = newflambda.T
+        trained_flambda = []
+
+        for t,sed in sedslices.items():
+            if verbose:
+                print(t)
+            sed.train(training_sets[t], bandpasses, Ncpus=Ncpus)
+            trained_flambda.append(sed.flambda)
+        
+        self.flambda = np.array(trained_flambda).T
 
     def copy(self):
         return copy.deepcopy(self)
@@ -486,40 +461,6 @@ class LightCurve:
         ax.set_yticks([])
 
         return fig, ax
-
-
-def mse_worker(task):
-    sed = task[0]
-    training_set = task[1]
-    bandpasses = task[2]
-    N = 0
-    for obj in training_set:
-        N += len(obj.photometry['flux'])
-    return [N, N*sed.mse(training_set, bandpasses)]
-    
-def perturbation_worker(task):
-    sed = task[0]
-    training_set = task[1]
-    bandpasses = task[2]
-    w = task[3]
-    Delta = task[4]
-    sed.perturb(training_set, bandpasses, w, Delta)
-    return sed.flambda
-
-def training_worker(task):
-    sed = task[0]
-    training_set = task[1]
-    bandpasses = task[2]
-    w = task[3]
-    Delta = task[4]
-    dmse_stop = task[5]
-    maxPerts = task[6]
-
-    if len(training_set) > 0:
-        sed.train(training_set, bandpasses, w, Delta, dmse_stop, maxPerts)
-        
-    return sed.flambda
-
 
 
 class SkyObject:
@@ -672,8 +613,8 @@ def survey_worker(task):
         sed = lc.sed_slice(T)
         sed.redshift(z)
         
-        flux = np.clip(sed.flux(band), 1e-3, None) # need to figure out a way to handle negative and zero fluxes
-        flux_err = np.fabs(survey.flux_errf * flux)
+        flux = sed.flux(band)
+        flux_err = np.clip(np.fabs(survey.flux_errf * flux), 1e-4, None)
         flux = round(np.random.normal(flux, flux_err), 6)
         flux_err = np.clip(round(flux_err, 6), 1e-6, None)
 
