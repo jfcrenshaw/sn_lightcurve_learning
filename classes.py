@@ -158,8 +158,8 @@ class Sed:
         
         # cross validation ridge regression
         alphas = np.linspace(1e-5,1,1000)
-        N_EDBs = np.arange(30,50,1)
-        max_widths = np.append(np.arange(500,1200,100), None)
+        N_EDBs = np.arange(30,45,1)
+        max_widths = np.append(np.arange(600,1100,100), None)
         kfolds = min(5,len(g))
         model = RidgeDEDB(alphas=alphas, initbins=initbins)
         cv = GridSearchCV(model, {'N_EDB':N_EDBs, 'max_width':max_widths}, cv=kfolds, n_jobs=Ncpus)
