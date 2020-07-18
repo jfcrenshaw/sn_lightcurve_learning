@@ -106,6 +106,10 @@ class Sed:
         
     def null(self):
         self.flambda = 0. * self.wavelen
+
+    def regrid(self, wavelen):
+        self.flambda = np.interp(wavelen, self.wavelen, self.flambda, left=0, right=0)
+        self.wavelen = wavelen
         
     def redshift(self, z=None):
         if z is None:
@@ -124,7 +128,7 @@ class Sed:
         filters = bandpasses.names if filters is None else filters
         return np.array([self.flux(bandpasses.band(name)) for name in filters])
     
-    def train(self, observations, bandpasses, return_model=False, verbose=False, Ncpus=1):
+    def train(self, observations, bandpasses, fit_bias=False, return_model=False, verbose=False, Ncpus=1):
 
         # begin with binning at bandpass resolution
         dlambda = bandpasses.dlambda 
@@ -132,29 +136,34 @@ class Sed:
 
         # create objects for training
         R = np.zeros(len(initbins)) # empty row that is removed after assembling R
-        g = np.array([])
+        fluxes = np.array([])
         sigmas = np.array([])
+        filters = np.array([])
 
         for obj in observations:
 
             # append bandpasses to R
-            filters = obj.photometry['filter']
-            rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),initbins) for band in bandpasses.bands(filters)])
+            filters_ = obj.photometry['filter']
+            rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),initbins) for band in bandpasses.bands(filters_)])
             R = np.vstack((R, rn))
 
-            # append to residual vector R
-            sed = self.copy()
-            sed.redshift(obj.specz)
-            g = np.concatenate((g, obj.photometry['flux'] - sed.fluxes(bandpasses, filters)))
+            # append fluxes
+            fluxes = np.concatenate((fluxes, obj.photometry['flux']))
             
             # append flux errors
             sigmas = np.concatenate((sigmas, obj.photometry['flux_err']))
+
+            # append filters
+            filters = np.concatenate((filters, obj.photometry['filter']))
             
         # cut out the extraneous zeros on the wavelength tails
         idx = np.where(np.sum(R,axis=0) > 0)[0]
         idxmin, idxmax = idx[0], idx[-1] + 1
         initbins = initbins[idxmin:idxmax]
         R = R[1:,idxmin:idxmax] # we also remove first empty row of R 
+
+        # calculate g
+        g = fluxes - R @ np.interp(initbins, self.wavelen, self.flambda) * dlambda
         
         # cross validation ridge regression
         alphas = np.linspace(1e-5,1,1000)
@@ -165,10 +174,55 @@ class Sed:
         cv = GridSearchCV(model, {'N_EDB':N_EDBs, 'max_width':max_widths}, cv=kfolds, n_jobs=Ncpus)
         cv.fit(R, g, sigmas=sigmas)
         model = cv.best_estimator_
+
+        pert = model.coef_
+
+        # if fitting for bias, perform expectation maximization
+        if fit_bias:
+
+            biases = np.zeros(len(bandpasses.names))
+            filter_dict = {name:i for i,name in enumerate(bandpasses.names)}
+
+            sed = self.copy()
+            sed.regrid(model.allbins_)
+
+            pert0, biases0 = pert * 100, biases + 100
+
+            while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-3, atol=1e-3)):
+
+                pert0, biases0 = pert, biases
+
+                # create G and g
+                G = model.R_dlambda_ * (1 + biases[np.vectorize(filter_dict.get)(filters)]).reshape(-1,1)
+                g = fluxes - G @ sed.flambda
+
+                # determine the perturbation
+                alphas = np.linspace(1e-5,1,1000)
+                model_ = RidgeCV(alphas=alphas, fit_intercept=False)
+                model_.fit(G, g, 1/sigmas**2)
+                pert = model_.coef_
+                alpha = model_.alpha_
+
+                # create H and h
+                h0 = model.R_dlambda_ @ (sed.flambda + pert)
+                H = np.zeros((len(h0), len(bandpasses.names)))
+                H[range(len(h0)), np.vectorize(filter_dict.get)(filters)] = h0
+                h = fluxes - h0
+
+                # determine biases
+                betas = np.linspace(1e-1,1e8,1000)
+                # Note!! check fit_intercept True vs False and see which one works better!
+                model_ = RidgeCV(alphas=betas, fit_intercept=False)
+                model_.fit(H, h, 1/sigmas**2)
+                biases = model_.coef_
+                beta = model_.alpha_
+                if beta == min(betas):
+                    print(f"Warning: beta = {beta}, which is the minimum of its range.")
+                    print(f"Consider lowering the range of betas tested.")
         
         # add perturbation to original SED
         finalbins = np.append(model.allbins_, initbins[-1])
-        pert = np.append(model.coef_, 0)
+        pert = np.append(pert, 0)
         self.flambda += np.interp(self.wavelen, finalbins, pert, left=0, right=0)
 
         # print statements
@@ -179,6 +233,11 @@ class Sed:
         if verbose:
             for name,val in zip(names,vals):
                 print(f"{name} = {val}")
+            if fit_bias:
+                print(f'beta = {beta}')
+                print('Biases:')
+                for name,bias in zip(bandpasses.names,biases):
+                    print(f'{name}: {bias:.4f}')
         
         for name, val, cv_range in zip(names[:-1],vals[:-1],cv_ranges):
             if val == min(cv_range):
@@ -228,6 +287,7 @@ class RidgeDEDB(BaseEstimator):
 
         # rebin R and calculate R * dlambda
         R_dlambda = np.array([rebin_pdf(self.initbins, row, allbins) * np.diff(allbins, append=0) for row in R])
+        self.R_dlambda_ = R_dlambda
 
         # perform cross-validated Ridge Regression on alpha
         model = RidgeCV(alphas=self.alphas, fit_intercept=False)
@@ -241,7 +301,7 @@ class RidgeDEDB(BaseEstimator):
     
     def predict(self, R):
 
-        R_dlambda = np.array([rebin_pdf(self.initbins, row, self.allbins_) * np.diff(self.allbins_,append=0) for row in R])
+        R_dlambda = np.array([rebin_pdf(self.initbins, row, self.allbins_) * np.diff(self.allbins_, append=0) for row in R])
         
         return R_dlambda @ self.coef_
     
