@@ -4,7 +4,7 @@ from scipy.interpolate import interp2d
 import sncosmo
 from astropy.table import Table
 from schwimmbad import MultiPool
-from sklearn.linear_model import RidgeCV
+from sklearn.linear_model import RidgeCV, LassoCV
 from sklearn.base import BaseEstimator
 from sklearn.model_selection import GridSearchCV
 import matplotlib.pyplot as plt
@@ -188,7 +188,7 @@ class Sed:
 
             pert0, biases0 = pert * 100, biases + 100
 
-            while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-3, atol=1e-3)):
+            while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-2, atol=1e-3)):
 
                 pert0, biases0 = pert, biases
 
@@ -210,15 +210,17 @@ class Sed:
                 h = fluxes - h0
 
                 # determine biases
-                betas = np.linspace(1e-1,1e8,1000)
+                betas = np.linspace(1e-5,1e8,10000)
                 # Note!! check fit_intercept True vs False and see which one works better!
-                model_ = RidgeCV(alphas=betas, fit_intercept=False)
-                model_.fit(H, h, 1/sigmas**2)
+                #model_ = RidgeCV(alphas=betas, fit_intercept=False)
+                #model_.fit(H, h, 1/sigmas**2)
+                model_ = LassoCV(fit_intercept=False)
+                model_.fit(H, h)
                 biases = model_.coef_
                 beta = model_.alpha_
-                if beta == min(betas):
-                    print(f"Warning: beta = {beta}, which is the minimum of its range.")
-                    print(f"Consider lowering the range of betas tested.")
+                #if beta == min(betas):
+                #    print(f"Warning: beta = {beta}, which is the minimum of its range.")
+                #    print(f"Consider lowering the range of betas tested.")
         
         # add perturbation to original SED
         finalbins = np.append(model.allbins_, initbins[-1])
@@ -237,7 +239,7 @@ class Sed:
                 print(f'beta = {beta}')
                 print('Biases:')
                 for name,bias in zip(bandpasses.names,biases):
-                    print(f'{name}: {bias:.4f}')
+                    print(f'{name}: {bias:>7.4f}')
         
         for name, val, cv_range in zip(names[:-1],vals[:-1],cv_ranges):
             if val == min(cv_range):
@@ -576,7 +578,7 @@ class SNSurvey:
     """
     
     def __init__(self, obs=None, model=None, zmin=0, zmax=1, area=1, duration=1e3, cadence=1, 
-                 flux_errf=0.05, norm=None):
+                 flux_errf=0.05, bias=None, norm=None):
         self.obs = obs
         self.model = model
         self.zmin = zmin
@@ -585,6 +587,7 @@ class SNSurvey:
         self.duration = duration
         self.cadence = cadence
         self.flux_errf = flux_errf
+        self.bias = bias
 
     @property
     def Nobs(self):
@@ -615,7 +618,8 @@ class SNSurvey:
         redshifts = list(sncosmo.zdist(self.zmin, self.zmax, time=self.duration, area=self.area))
 
         tasks = list(zip(redshifts, [self]*len(redshifts), [bandpasses]*len(redshifts),
-                    [lc]*len(redshifts), np.random.randint(2**32 - 1,size=len(redshifts))))
+                    [self.bias]*len(redshifts), [lc]*len(redshifts), 
+                    np.random.randint(2**32 - 1,size=len(redshifts))))
         with MultiPool(processes=Ncpus) as pool:
             observations = np.array(list(pool.map(survey_worker, tasks)))
         self.obs = observations
@@ -632,7 +636,8 @@ class SNSurvey:
                   f'{"area":>9} = {str(self.area):<6} \n'
                   f'{"duration":>9} = {str(self.duration):<6} \n'
                   f'{"cadence":>9} = {str(self.cadence):<6} \n'
-                  f'{"flux errf":>9} = {str(self.flux_errf):<6} \n\n' ) + \
+                  f'{"flux errf":>9} = {str(self.flux_errf):<6} \n'
+                  f'{"bias":>9} = {str(self.bias)} \n\n' ) + \
                   'Model: \n' + '\n'.join(self.model.__str__().split('\n')[1:])
         
         return string
@@ -643,11 +648,12 @@ def survey_worker(task):
     z = task[0]
     survey = task[1]
     bandpasses = task[2]
-    lc = task[3].copy()
+    bias = task[3]
+    lc = task[4].copy()
     lc.time *= (1 + z)
     tmin = lc.tmin
     tmax = lc.tmax
-    seed = task[4]
+    seed = task[5]
 
     np.random.seed(seed)
 
@@ -659,6 +665,7 @@ def survey_worker(task):
     fluxes = np.array([])
     flux_errs = np.array([])
     filters = np.array([])
+    filter_dict = {name:i for i,name in enumerate(bandpasses.names)}
     
     for i,t in enumerate( np.arange(tmin + toffset, tmax, survey.cadence) ):
         
@@ -674,6 +681,7 @@ def survey_worker(task):
         sed.redshift(z)
         
         flux = sed.flux(band)
+        flux *= (1 + bias[filter_dict[band_name]])
         flux_err = np.clip(np.fabs(survey.flux_errf * flux), 1e-4, None)
         flux = round(np.random.normal(flux, flux_err), 6)
         flux_err = np.clip(round(flux_err, 6), 1e-6, None)
