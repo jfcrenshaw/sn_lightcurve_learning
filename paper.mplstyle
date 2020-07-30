@@ -23,11 +23,26 @@ xtick.top       : True
 ytick.right     : True
 
 # Lines and Markers
-lines.linewidth  : 1.2
-lines.markersize : 2
+lines.linewidth  : 1
+lines.markersize : 1
 
 # Legend
 legend.fontsize : 10
 
 # Saved Figure
-savefig.dpi        : 600
+savefig.dpi        : 500
+
+
+
+# to do:
+# change all blacks to 'almost black' #262626
+# new color cycle, starting with 'almost black', and using colors from the desc style guide
+# look at this page https://olgabotvinnik.com/blog/prettyplotlib-painlessly-create-beautiful-matplotlib/
+
+#other sources
+# https://matplotlib.org/tutorials/introductory/customizing.html#customizing-with-matplotlibrc-files
+# https://matplotlib.org/users/dflt_style_changes.html
+# https://tableaufriction.blogspot.com/2012/11/finally-you-can-use-tableau-data-colors.html
+
+# colors!
+# https://observablehq.com/@d3/color-schemes

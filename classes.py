@@ -168,12 +168,15 @@ class Sed:
         # cross validation ridge regression
         alphas = np.linspace(1e-5,1,1000)
         N_EDBs = np.arange(30,45,1)
-        max_widths = np.append(np.arange(600,1100,100), None)
+        max_widths = np.append(np.arange(500,1100,100), None)
         kfolds = min(5,len(g))
         model = RidgeDEDB(alphas=alphas, initbins=initbins)
         cv = GridSearchCV(model, {'N_EDB':N_EDBs, 'max_width':max_widths}, cv=kfolds, n_jobs=Ncpus)
         cv.fit(R, g, sigmas=sigmas)
         model = cv.best_estimator_
+
+        #model = RidgeDEDB(alphas=[0.6897], initbins=initbins, N_EDB=43, max_width=500)
+        #model.fit(R, g, sigmas=sigmas)
 
         pert = model.coef_
 
@@ -188,7 +191,12 @@ class Sed:
 
             pert0, biases0 = pert * 100, biases + 100
 
-            while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-2, atol=1e-3)):
+            em_count = 0
+
+            while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-3, atol=1e-3)):
+
+                em_count += 1
+                print(em_count)
 
                 pert0, biases0 = pert, biases
 
@@ -209,23 +217,33 @@ class Sed:
                 H[range(len(h0)), np.vectorize(filter_dict.get)(filters)] = h0
                 h = fluxes - h0
 
+                # remove the reference band bc we set its bias = 0
+                ref_band = 'lssti'
+                idx = filter_dict[ref_band]
+                H = np.delete(H,idx,1)
+                H = H[~(H==0).all(1)]
+                h = h[filters != ref_band]
+                sigmas_ = sigmas[filters != 'lssti']
+
                 # determine biases
-                betas = np.linspace(1e-5,1e8,10000)
-                # Note!! check fit_intercept True vs False and see which one works better!
-                #model_ = RidgeCV(alphas=betas, fit_intercept=False)
-                #model_.fit(H, h, 1/sigmas**2)
-                model_ = LassoCV(fit_intercept=False)
+                betas = np.geomspace(1e-2, 1e8, 1000)
+                model_ = LassoCV(alphas=betas, fit_intercept=True, n_jobs=Ncpus)
                 model_.fit(H, h)
                 biases = model_.coef_
                 beta = model_.alpha_
-                #if beta == min(betas):
-                #    print(f"Warning: beta = {beta}, which is the minimum of its range.")
-                #    print(f"Consider lowering the range of betas tested.")
+
+                biases = np.insert(biases,idx,0)
+                print(beta)
+                print(biases)
+
+            print(em_count)
         
         # add perturbation to original SED
         finalbins = np.append(model.allbins_, initbins[-1])
         pert = np.append(pert, 0)
         self.flambda += np.interp(self.wavelen, finalbins, pert, left=0, right=0)
+
+        return h,h0[filters != ref_band],filters[filters != ref_band]
 
         # print statements
         names = ['alpha', 'N_EDB', 'Max width', 'N_split']
@@ -236,7 +254,7 @@ class Sed:
             for name,val in zip(names,vals):
                 print(f"{name} = {val}")
             if fit_bias:
-                print(f'beta = {beta}')
+                print(f'beta = {beta:.4f}')
                 print('Biases:')
                 for name,bias in zip(bandpasses.names,biases):
                     print(f'{name}: {bias:>7.4f}')
@@ -249,8 +267,9 @@ class Sed:
                 print(f"Warning: {name} = {val}, which is the maximum of the tested range.\n",
                         f"Consider raising the range of {name}s tested.")
                 
+
         if return_model:
-            return model
+            return model, biases
 
     def copy(self):
         return copy.deepcopy(self)
