@@ -146,13 +146,10 @@ class Sed:
             filters_ = obj.photometry['filter']
             rn = np.array([rebin_pdf(band.wavelen/(1+obj.specz),band.R*(1+obj.specz),initbins) for band in bandpasses.bands(filters_)])
             R = np.vstack((R, rn))
-
             # append fluxes
             fluxes = np.concatenate((fluxes, obj.photometry['flux']))
-            
             # append flux errors
             sigmas = np.concatenate((sigmas, obj.photometry['flux_err']))
-
             # append filters
             filters = np.concatenate((filters, obj.photometry['filter']))
             
@@ -165,7 +162,7 @@ class Sed:
         # calculate g
         g = fluxes - R @ np.interp(initbins, self.wavelen, self.flambda) * dlambda
         
-        # cross validation ridge regression
+        # cross validation DEDBing ridge regression
         alphas = np.linspace(1e-5,1,1000)
         N_EDBs = np.arange(30,45,1)
         max_widths = np.append(np.arange(500,1100,100), None)
@@ -175,6 +172,8 @@ class Sed:
         cv.fit(R, g, sigmas=sigmas)
         model = cv.best_estimator_
 
+        # can skip CV and manually input params if you want to quickly experiment with 
+        # the bias fitting loop
         #model = RidgeDEDB(alphas=[0.6897], initbins=initbins, N_EDB=43, max_width=500)
         #model.fit(R, g, sigmas=sigmas)
 
