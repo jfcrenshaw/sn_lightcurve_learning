@@ -128,7 +128,7 @@ class Sed:
         filters = bandpasses.names if filters is None else filters
         return np.array([self.flux(bandpasses.band(name)) for name in filters])
     
-    def train(self, observations, bandpasses, fit_bias=False, return_model=False, verbose=False, Ncpus=1):
+    def train(self, observations, bandpasses, fit_bias=False, ref_band='lssti', return_flag=False, verbose=False, Ncpus=1):
 
         # begin with binning at bandpass resolution
         dlambda = bandpasses.dlambda 
@@ -195,7 +195,6 @@ class Sed:
             while not all(np.isclose([*pert,*biases], [*pert0,*biases0], rtol=1e-3, atol=1e-3)):
 
                 em_count += 1
-                print(em_count)
 
                 pert0, biases0 = pert, biases
 
@@ -217,12 +216,11 @@ class Sed:
                 h = fluxes - h0
 
                 # remove the reference band bc we set its bias = 0
-                ref_band = 'lssti'
                 idx = filter_dict[ref_band]
                 H = np.delete(H,idx,1)
                 H = H[~(H==0).all(1)]
                 h = h[filters != ref_band]
-                sigmas_ = sigmas[filters != 'lssti']
+                sigmas_ = sigmas[filters != ref_band]
 
                 # determine biases
                 betas = np.geomspace(1e-2, 1e8, 1000)
@@ -232,17 +230,19 @@ class Sed:
                 beta = model_.alpha_
 
                 biases = np.insert(biases,idx,0)
-                print(beta)
-                print(biases)
 
-            print(em_count)
+            # if return_flag == True, we need to create a model object that contains 
+            # the correct hyperparameters and is fit for the bias-compensated filters
+            if return_flag == True:
+                G = R * (1 + biases[np.vectorize(filter_dict.get)(filters)]).reshape(-1,1)
+                g = fluxes - G @ np.interp(initbins, self.wavelen, self.flambda) * dlambda
+                model = RidgeDEDB(alphas=[alpha], initbins=initbins, N_EDB=model.N_EDB, max_width=model.max_width)
+                model.fit(G, g, 1/sigmas**2)
         
         # add perturbation to original SED
         finalbins = np.append(model.allbins_, initbins[-1])
         pert = np.append(pert, 0)
         self.flambda += np.interp(self.wavelen, finalbins, pert, left=0, right=0)
-
-        return h,h0[filters != ref_band],filters[filters != ref_band]
 
         # print statements
         names = ['alpha', 'N_EDB', 'Max width', 'N_split']
@@ -252,12 +252,14 @@ class Sed:
         if verbose:
             for name,val in zip(names,vals):
                 print(f"{name} = {val}")
+            print(' ')
             if fit_bias:
                 print(f'beta = {beta:.4f}')
                 print('Biases:')
                 for name,bias in zip(bandpasses.names,biases):
                     print(f'{name}: {bias:>7.4f}')
-        
+                print(' ')
+            
         for name, val, cv_range in zip(names[:-1],vals[:-1],cv_ranges):
             if val == min(cv_range):
                 print(f"Warning: {name} = {val}, which is the minimum of the tested range.\n",
@@ -267,8 +269,11 @@ class Sed:
                         f"Consider raising the range of {name}s tested.")
                 
 
-        if return_model:
-            return model, biases
+        if return_flag:
+            if fit_bias:
+                return model, biases
+            else:
+                return model
 
     def copy(self):
         return copy.deepcopy(self)
@@ -699,7 +704,8 @@ def survey_worker(task):
         sed.redshift(z)
         
         flux = sed.flux(band)
-        flux *= (1 + bias[filter_dict[band_name]])
+        if bias is not None:
+            flux *= (1 + bias[filter_dict[band_name]])
         flux_err = np.clip(np.fabs(survey.flux_errf * flux), 1e-4, None)
         flux = round(np.random.normal(flux, flux_err), 6)
         flux_err = np.clip(round(flux_err, 6), 1e-6, None)
