@@ -134,3 +134,6 @@ dmypy.json
 # plasticc data
 plasticc_data/*csv
 plasticc_data/*pkl
+
+# vscode settings
+.vscode/
